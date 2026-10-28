@@ -6,11 +6,190 @@
   <title>EERR</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { width: 100%; height: 100%; overflow: hidden; }
-    iframe { display: block; width: 100%; height: 100%; border: none; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: "Segoe UI", Arial, sans-serif; }
+    #report { width: 100%; height: 100%; }
+    #msg {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: #fff; color: #444; font-size: 15px; padding: 20px; text-align: center; z-index: 5;
+    }
+    #toast {
+      position: fixed; bottom: 20px; right: 20px; background: #323232; color: #fff;
+      padding: 10px 16px; border-radius: 6px; font-size: 14px; display: none; z-index: 10;
+      box-shadow: 0 2px 8px rgba(0,0,0,.3);
+    }
   </style>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js"></script>
 </head>
 <body>
-  <iframe src="https://app.powerbi.com/reportEmbed?reportId=4a0b4d4d-459e-4bca-8f8c-3feded25333a&autoAuth=true&ctid=e6684c44-ece9-445e-8561-d274239534c5" allowfullscreen title="EERR Sistema"></iframe>
+  <div id="msg">Cargando informe…</div>
+  <div id="report"></div>
+  <div id="toast"></div>
+
+<script>
+// ================== CONFIGURACIÓN (completar) ==================
+const CONFIG = {
+  clientId:  "256c7b81-5d04-4483-8c32-6ff25b4c817e",
+  tenantId:  "e6684c44-ece9-445e-8561-d274239534c5",
+  groupId:   "a83b84fb-9a41-4fc0-bfd1-122520b80aeb",
+  reportId:  "4a0b4d4d-459e-4bca-8f8c-3feded25333a",
+  refreshButtonTitle: "btnActualizar"   // título del botón en el .pbix
+};
+// La URI de redirección es la URL exacta de esta página (registrarla en Azure como SPA)
+const REDIRECT_URI = window.location.origin + window.location.pathname;
+// ===============================================================
+
+const SCOPES = [
+  "https://analysis.windows.net/powerbi/api/Report.Read.All",
+  "https://analysis.windows.net/powerbi/api/Dataset.ReadWrite.All"
+];
+const API = "https://api.powerbi.com/v1.0/myorg";
+
+const msgEl = document.getElementById("msg");
+const toastEl = document.getElementById("toast");
+let toastTimer;
+function toast(text, ms = 4000) {
+  clearTimeout(toastTimer);
+  toastEl.textContent = text;
+  toastEl.style.display = "block";
+  if (ms > 0) toastTimer = setTimeout(() => toastEl.style.display = "none", ms);
+}
+
+const msalApp = new msal.PublicClientApplication({
+  auth: {
+    clientId: CONFIG.clientId,
+    authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
+    redirectUri: REDIRECT_URI
+  },
+  cache: { cacheLocation: "localStorage" }
+});
+
+async function getToken() {
+  const account = msalApp.getActiveAccount() || msalApp.getAllAccounts()[0];
+  if (!account) {
+    await msalApp.loginRedirect({ scopes: SCOPES });
+    return null;
+  }
+  msalApp.setActiveAccount(account);
+  try {
+    const r = await msalApp.acquireTokenSilent({ scopes: SCOPES, account });
+    return r.accessToken;
+  } catch (e) {
+    if (e instanceof msal.InteractionRequiredAuthError) {
+      await msalApp.acquireTokenRedirect({ scopes: SCOPES, account });
+      return null;
+    }
+    throw e;
+  }
+}
+
+let report, datasetId;
+
+(async () => {
+  try {
+    await msalApp.initialize();
+    const res = await msalApp.handleRedirectPromise();
+    if (res && res.account) msalApp.setActiveAccount(res.account);
+
+    const token = await getToken();
+    if (!token) return; // redirigiendo al login
+
+    // Datos del informe (embedUrl y datasetId)
+    const r = await fetch(`${API}/groups/${CONFIG.groupId}/reports/${CONFIG.reportId}`,
+      { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) throw new Error(`No se pudo leer el informe (HTTP ${r.status}). Verificá el ID del workspace y tus permisos.`);
+    const info = await r.json();
+    datasetId = info.datasetId;
+
+    const models = window["powerbi-client"].models;
+    report = powerbi.embed(document.getElementById("report"), {
+      type: "report",
+      id: CONFIG.reportId,
+      embedUrl: info.embedUrl,
+      accessToken: token,
+      tokenType: models.TokenType.Aad,
+      permissions: models.Permissions.Read,
+      settings: {
+        persistentFiltersEnabled: true,   // recuerda la última selección de cada usuario
+        panes: {
+          filters: { visible: true, expanded: false },
+          pageNavigation: { visible: true }
+        }
+      }
+    });
+
+    report.on("loaded", () => msgEl.style.display = "none");
+    report.on("error", e => console.warn("Power BI:", e.detail));
+    report.on("buttonClicked", e => {
+      console.log("Botón clickeado:", e.detail);
+      if (e.detail && e.detail.title === CONFIG.refreshButtonTitle) actualizar();
+    });
+
+    // Renovar el token antes de que venza (~1 h)
+    setInterval(async () => {
+      try { const t = await getToken(); if (t) await report.setAccessToken(t); }
+      catch (e) { console.error("Renovación de token:", e); }
+    }, 40 * 60 * 1000);
+
+  } catch (e) {
+    console.error(e);
+    msgEl.textContent = "Error: " + e.message;
+  }
+})();
+
+// ================== BOTÓN DE ACTUALIZACIÓN ==================
+let refrescando = false;
+
+async function ultimoRefresh(token) {
+  const r = await fetch(`${API}/groups/${CONFIG.groupId}/datasets/${datasetId}/refreshes?$top=1`,
+    { headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) return null;
+  const j = await r.json();
+  return j.value && j.value[0];
+}
+
+async function actualizar() {
+  if (refrescando) { toast("Ya hay una actualización en curso…"); return; }
+  const token = await getToken();
+  if (!token) return;
+
+  const previo = await ultimoRefresh(token);
+  if (previo && previo.status === "Unknown") { toast("Ya hay una actualización en curso…"); return; }
+
+  const p = await fetch(`${API}/groups/${CONFIG.groupId}/datasets/${datasetId}/refreshes`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ notifyOption: "NoNotification" })
+  });
+  if (!p.ok) {
+    console.error(await p.text());
+    toast(p.status === 403
+      ? "No tenés permiso para actualizar este modelo."
+      : `No se pudo iniciar la actualización (HTTP ${p.status}).`, 6000);
+    return;
+  }
+
+  refrescando = true;
+  toast("Actualizando datos… esto puede tardar unos minutos.", 0);
+  const prevId = previo && previo.requestId;
+
+  const timer = setInterval(async () => {
+    try {
+      const t = await getToken();
+      if (!t) return;
+      const s = await ultimoRefresh(t);
+      if (!s || s.requestId === prevId) return; // todavía no aparece el nuevo
+      if (s.status === "Completed") {
+        clearInterval(timer); refrescando = false;
+        await report.reload();
+        toast("Datos actualizados ✔", 4000);
+      } else if (s.status === "Failed" || s.status === "Disabled") {
+        clearInterval(timer); refrescando = false;
+        toast("La actualización falló. Revisá el historial en Power BI Service.", 8000);
+      }
+    } catch (e) { console.error(e); }
+  }, 15000);
+}
+</script>
 </body>
 </html>
