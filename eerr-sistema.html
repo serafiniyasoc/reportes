@@ -33,7 +33,7 @@ const CONFIG = {
   tenantId:  "e6684c44-ece9-445e-8561-d274239534c5",
   groupId:   "a83b84fb-9a41-4fc0-bfd1-122520b80aeb",
   reportId:  "4a0b4d4d-459e-4bca-8f8c-3feded25333a",
-  refreshButtonTitle: "btnActualizar"   // título del botón en el .pbix
+  refreshButtonText: "actualizar"   // el botón se reconoce si su TEXTO contiene esta palabra
 };
 // La URI de redirección es la URL exacta de esta página (registrarla en Azure como SPA)
 const REDIRECT_URI = window.location.origin + window.location.pathname;
@@ -118,11 +118,15 @@ let report, datasetId;
       }
     });
 
-    report.on("loaded", () => msgEl.style.display = "none");
+    report.on("loaded", () => {
+      msgEl.style.display = "none";
+      console.log("[EERR] Informe cargado con el SDK. Usuario:", (msalApp.getActiveAccount() || {}).username);
+    });
     report.on("error", e => console.warn("Power BI:", e.detail));
     report.on("buttonClicked", e => {
-      console.log("Botón clickeado:", e.detail);
-      if (e.detail && e.detail.title === CONFIG.refreshButtonTitle) actualizar();
+      console.log("[EERR] Botón clickeado:", JSON.stringify(e.detail));
+      const texto = ((e.detail && e.detail.title) || "").toLowerCase();
+      if (texto.includes(CONFIG.refreshButtonText)) actualizar();
     });
 
     // Renovar el token antes de que venza (~1 h)
@@ -190,6 +194,10 @@ async function actualizar() {
     } catch (e) { console.error(e); }
   }, 15000);
 }
+</script>
+</body>
+</html>
+
 </script>
 </body>
 </html>
