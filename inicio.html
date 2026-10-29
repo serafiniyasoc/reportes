@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Menú Reportes</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: "Segoe UI", Arial, sans-serif; background: #f3f4f6; color: #222; min-height: 100vh; }
+    header {
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      padding: 14px 20px; background: #fff; border-bottom: 1px solid #e3e3e3;
+    }
+    header h1 { font-size: 18px; font-weight: 600; }
+    #usuario { font-size: 13px; color: #666; text-align: right; }
+    #usuario a { color: #0078D4; cursor: pointer; text-decoration: none; margin-left: 8px; }
+    main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
+    #estado { padding: 12px 14px; border-radius: 6px; background: #eef2ff; font-size: 14px; }
+    #estado.err { background: #fdecec; color: #8a1c1c; white-space: pre-wrap; }
+    #grupos { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; align-items: start; }
+    .grupo { background: #fff; border-radius: 8px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.10); }
+    .grupo h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #555; margin: 0 2px 10px; }
+    .botones { display: flex; flex-direction: column; gap: 8px; }
+    .botones a {
+      display: block; padding: 12px 20px; background: #0078D4; color: #fff; border-radius: 6px;
+      text-decoration: none; font-size: 14px; font-weight: 600; text-align: center;
+    }
+    .botones a:hover, .botones a:focus { background: #005A9E; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Reportes</h1>
+    <div id="usuario"></div>
+  </header>
+  <main>
+    <div id="estado">Cargando menú…</div>
+    <div id="grupos"></div>
+  </main>
+
+<script>
+// ================== CONFIGURACIÓN ==================
+const CONFIG = {
+  clientId:  "256c7b81-5d04-4483-8c32-6ff25b4c817e",
+  tenantId:  "e6684c44-ece9-445e-8561-d274239534c5",
+  groupId:   "3dba45c2-9d88-4f5a-8a82-a649f42e0cc2",   // workspace del modelo del menú
+  datasetId: "13dd0de7-54e7-406b-b6ae-ba903bae3ff7",   // modelo semántico del menú
+  abrirEnPestanaNueva: true,                            // igual que el menú actual
+  // Orden en que se muestran los grupos (columna Reporte de la hoja Menu).
+  // Un grupo nuevo que no esté en esta lista aparece al final, sin tocar el código.
+  ordenGrupos: ["Campo", "Administración", "Gastos y Consumos", "RRHH"],
+  grupoSinNombre: "Otros"
+};
+const REDIRECT_URI = window.location.origin + window.location.pathname;
+// ===================================================
+
+const SCOPES = [
+  "https://analysis.windows.net/powerbi/api/Report.Read.All",
+  "https://analysis.windows.net/powerbi/api/Dataset.Read.All"
+];
+
+// Misma lógica que la medida MenuHTML: usuario actual + Acceso = 1.
+// Grupo = columna Reporte de la hoja Menu; nombre del botón = Titulo.
+const CONSULTAS = [
+  `EVALUATE SELECTCOLUMNS(FILTER(Usuarios, Usuarios[Usuario] = USERPRINCIPALNAME() && Usuarios[Acceso] = 1), "Titulo", Usuarios[Titulo], "Link", RELATED(Menu[Link Power Bi]), "Grupo", RELATED(Menu[Reporte]))`
+];
+
+const estado = document.getElementById("estado");
+function msg(t, err) { estado.style.display = "block"; estado.textContent = t; estado.className = err ? "err" : ""; }
+
+const msalApp = new msal.PublicClientApplication({
+  auth: {
+    clientId: CONFIG.clientId,
+    authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
+    redirectUri: REDIRECT_URI
+  },
+  cache: { cacheLocation: "localStorage" }
+});
+
+async function getToken() {
+  const account = msalApp.getActiveAccount() || msalApp.getAllAccounts()[0];
+  if (!account) { await msalApp.loginRedirect({ scopes: SCOPES }); return null; }
+  msalApp.setActiveAccount(account);
+  try {
+    return (await msalApp.acquireTokenSilent({ scopes: SCOPES, account })).accessToken;
+  } catch (e) {
+    if (e instanceof msal.InteractionRequiredAuthError) {
+      await msalApp.acquireTokenRedirect({ scopes: SCOPES, account }); return null;
+    }
+    throw e;
+  }
+}
+
+async function ejecutar(token, dax) {
+  const cuerpo = JSON.stringify({ queries: [{ query: dax }], serializerSettings: { includeNulls: true } });
+  const h = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  let r = await fetch(`https://api.powerbi.com/v1.0/myorg/datasets/${CONFIG.datasetId}/executeQueries`, { method: "POST", headers: h, body: cuerpo });
+  if (!r.ok && (r.status === 401 || r.status === 403 || r.status === 404)) {
+    r = await fetch(`https://api.powerbi.com/v1.0/myorg/groups/${CONFIG.groupId}/datasets/${CONFIG.datasetId}/executeQueries`, { method: "POST", headers: h, body: cuerpo });
+  }
+  return r;
+}
+
+// Nombre legible para la dirección: "Alimentación Tambo (desagregado)" -> "alimentacion-tambo-desagregado"
+function slug(t) {
+  return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function idDeLink(link) {
+  const s = String(link || "");
+  const m = s.match(/reports\/([0-9a-f-]{36})/i) || s.match(/reportId=([0-9a-f-]{36})/i);
+  return m ? m[1] : null;
+}
+
+function dibujar(filas) {
+  // Armar grupos solo con los reportes habilitados (los grupos vacíos no existen)
+  const vistos = new Set();
+  const items = [];
+  filas.forEach(f => {
+    const nombre = f["[Titulo]"];
+    const id = idDeLink(f["[Link]"]);       // filas sin link (reportes en preparación) no se muestran
+    if (!nombre || !id || vistos.has(id)) return;
+    vistos.add(id);
+    items.push({
+      nombre: String(nombre).trim(),
+      id,
+      grupo: (f["[Grupo]"] && String(f["[Grupo]"]).trim()) || CONFIG.grupoSinNombre
+    });
+  });
+
+  const posGrupo = g => { const i = CONFIG.ordenGrupos.indexOf(g); return i === -1 ? 999 : i; };
+  items.sort((a, b) =>
+    posGrupo(a.grupo) - posGrupo(b.grupo) ||
+    a.grupo.localeCompare(b.grupo, "es") ||
+    a.nombre.localeCompare(b.nombre, "es"));
+  const grupos = new Map();
+  items.forEach(it => { if (!grupos.has(it.grupo)) grupos.set(it.grupo, []); grupos.get(it.grupo).push(it); });
+
+  const cont = document.getElementById("grupos");
+  cont.innerHTML = "";
+  const hayGrupos = !(grupos.size === 1 && grupos.has(CONFIG.grupoSinNombre));
+
+  grupos.forEach((lista, nombreGrupo) => {
+    const div = document.createElement("section");
+    div.className = "grupo";
+    if (hayGrupos) {
+      const h2 = document.createElement("h2");
+      h2.textContent = nombreGrupo;
+      div.appendChild(h2);
+    }
+    const bot = document.createElement("div");
+    bot.className = "botones";
+    lista.forEach(it => {
+      const a = document.createElement("a");
+      a.textContent = it.nombre;
+      a.href = `reporte?r=${slug(it.nombre)}`;
+      if (CONFIG.abrirEnPestanaNueva) { a.target = "_blank"; a.rel = "noopener"; }
+      bot.appendChild(a);
+    });
+    div.appendChild(bot);
+    cont.appendChild(div);
+  });
+  return items.length;
+}
+
+(async () => {
+  try {
+    await msalApp.initialize();
+    const res = await msalApp.handleRedirectPromise();
+    if (res && res.account) msalApp.setActiveAccount(res.account);
+
+    const token = await getToken();
+    if (!token) return; // redirigiendo al login
+
+    const cuenta = msalApp.getActiveAccount() || {};
+    const u = document.getElementById("usuario");
+    u.textContent = cuenta.username || "";
+    const salir = document.createElement("a");
+    salir.textContent = "Cerrar sesión";
+    salir.onclick = () => msalApp.logoutRedirect({ account: cuenta, postLogoutRedirectUri: REDIRECT_URI });
+    u.appendChild(salir);
+
+    let r, ultimoError = "";
+    for (const dax of CONSULTAS) {
+      r = await ejecutar(token, dax);
+      if (r.ok) break;
+      ultimoError = `HTTP ${r.status}\n${await r.text()}`;
+      console.log("[MENU] Consulta rechazada, se prueba la siguiente:", ultimoError);
+      if (r.status === 401 || r.status === 403) break; // problema de permisos: no tiene sentido seguir probando
+    }
+    if (!r || !r.ok) { msg("No se pudo cargar el menú.\n" + ultimoError, true); return; }
+
+    const data = await r.json();
+    const filas = (((data.results || [])[0] || {}).tables || [])[0]?.rows || [];
+    const n = dibujar(filas);
+    if (n === 0) msg("No tenés reportes habilitados. Consultá con el administrador.");
+    else estado.style.display = "none";
+  } catch (e) {
+    console.error(e);
+    msg("Error: " + e.message, true);
+  }
+})();
+</script>
+</body>
+</html>

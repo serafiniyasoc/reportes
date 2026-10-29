@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reporte</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: "Segoe UI", Arial, sans-serif; }
+    #report { width: 100%; height: 100%; }
+    #msg {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: #fff; color: #444; font-size: 15px; padding: 20px; text-align: center; z-index: 5;
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js"></script>
+</head>
+<body>
+  <div id="msg">Cargando informe…</div>
+  <div id="report"></div>
+
+<script>
+// ================== CONFIGURACIÓN ==================
+// Página única para todos los reportes: reporte?r=<nombre-del-reporte>  (ej.: reporte?r=eerr-sistema)
+// El nombre se busca en el Excel del menú (columna Titulo) entre los reportes habilitados del usuario.
+const PARAMS = new URLSearchParams(window.location.search);
+const CONFIG = {
+  clientId:  "256c7b81-5d04-4483-8c32-6ff25b4c817e",
+  tenantId:  "e6684c44-ece9-445e-8561-d274239534c5",
+  menuGroupId:   "3dba45c2-9d88-4f5a-8a82-a649f42e0cc2",   // workspace del modelo del menú
+  menuDatasetId: "13dd0de7-54e7-406b-b6ae-ba903bae3ff7",   // modelo semántico del menú
+  reportId:  ""
+};
+const NOMBRE = (PARAMS.get("r") || "").trim().toLowerCase();
+const DAX = `EVALUATE SELECTCOLUMNS(FILTER(Usuarios, Usuarios[Usuario] = USERPRINCIPALNAME() && Usuarios[Acceso] = 1), "Titulo", Usuarios[Titulo], "Link", RELATED(Menu[Link Power Bi]))`;
+
+// Nombre legible para la dirección: "Alimentación Tambo (desagregado)" -> "alimentacion-tambo-desagregado"
+function slug(t) {
+  return String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function idDeLink(link) {
+  const s = String(link || "");
+  const m = s.match(/reports\/([0-9a-f-]{36})/i) || s.match(/reportId=([0-9a-f-]{36})/i);
+  return m ? m[1] : null;
+}
+
+// Busca el reporte por nombre entre los habilitados para el usuario
+async function buscarReporte(token) {
+  const cuerpo = JSON.stringify({ queries: [{ query: DAX }], serializerSettings: { includeNulls: true } });
+  const h = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  let r = await fetch(`https://api.powerbi.com/v1.0/myorg/datasets/${CONFIG.menuDatasetId}/executeQueries`, { method: "POST", headers: h, body: cuerpo });
+  if (!r.ok && (r.status === 401 || r.status === 403 || r.status === 404)) {
+    r = await fetch(`https://api.powerbi.com/v1.0/myorg/groups/${CONFIG.menuGroupId}/datasets/${CONFIG.menuDatasetId}/executeQueries`, { method: "POST", headers: h, body: cuerpo });
+  }
+  if (!r.ok) throw new Error(`No se pudo consultar el menú (HTTP ${r.status}).`);
+  const data = await r.json();
+  const filas = (((data.results || [])[0] || {}).tables || [])[0]?.rows || [];
+  for (const f of filas) {
+    const id = idDeLink(f["[Link]"]);
+    if (id && slug(f["[Titulo]"]) === NOMBRE) return { id, titulo: String(f["[Titulo]"]) };
+  }
+  return null;
+}
+// La URI de redirección es la URL exacta de esta página (registrarla en Azure como SPA)
+const REDIRECT_URI = window.location.origin + window.location.pathname;
+// ===============================================================
+
+const SCOPES = [
+  "https://analysis.windows.net/powerbi/api/Report.Read.All",
+  "https://analysis.windows.net/powerbi/api/Dataset.Read.All"
+];
+
+const msgEl = document.getElementById("msg");
+
+const msalApp = new msal.PublicClientApplication({
+  auth: {
+    clientId: CONFIG.clientId,
+    authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
+    redirectUri: REDIRECT_URI
+  },
+  cache: { cacheLocation: "localStorage" }
+});
+
+async function getToken() {
+  const account = msalApp.getActiveAccount() || msalApp.getAllAccounts()[0];
+  if (!account) {
+    await msalApp.loginRedirect({ scopes: SCOPES });
+    return null;
+  }
+  msalApp.setActiveAccount(account);
+  try {
+    const r = await msalApp.acquireTokenSilent({ scopes: SCOPES, account });
+    return r.accessToken;
+  } catch (e) {
+    if (e instanceof msal.InteractionRequiredAuthError) {
+      await msalApp.acquireTokenRedirect({ scopes: SCOPES, account });
+      return null;
+    }
+    throw e;
+  }
+}
+
+let report;
+
+(async () => {
+  try {
+    await msalApp.initialize();
+    const res = await msalApp.handleRedirectPromise();
+    if (res && res.account) msalApp.setActiveAccount(res.account);
+
+    if (!NOMBRE) {
+      msgEl.textContent = "Falta el reporte a mostrar. Volvé al menú y elegilo desde ahí.";
+      return;
+    }
+
+    const token = await getToken();
+    if (!token) return; // redirigiendo al login
+
+    const encontrado = await buscarReporte(token);
+    if (!encontrado) {
+      msgEl.textContent = "Este reporte no existe o no lo tenés habilitado. Consultá con el administrador.";
+      return;
+    }
+    CONFIG.reportId = encontrado.id;
+    document.title = encontrado.titulo;
+
+    const info = { embedUrl: `https://app.powerbi.com/reportEmbed?reportId=${CONFIG.reportId}&ctid=${CONFIG.tenantId}` };
+    let cargado = false;
+
+    const models = window["powerbi-client"].models;
+    report = powerbi.embed(document.getElementById("report"), {
+      type: "report",
+      id: CONFIG.reportId,
+      embedUrl: info.embedUrl,
+      accessToken: token,
+      tokenType: models.TokenType.Aad,
+      permissions: models.Permissions.Read,
+      settings: {
+        persistentFiltersEnabled: false,  // el estado lo guarda esta página (funciona en Edge y Chrome)
+        panes: {
+          filters: { visible: true, expanded: false },
+          pageNavigation: { visible: true }
+        }
+      }
+    });
+
+    // ---- Recordar filtros, segmentaciones, orden y página por usuario ----
+    const usuario = ((msalApp.getActiveAccount() || {}).username || "anon").toLowerCase();
+    const STATE_KEY = `pbiEstado_${CONFIG.reportId}_${usuario}`;
+    let restaurado = false, saveTimer;
+
+    function leerEstado() { try { return localStorage.getItem(STATE_KEY); } catch (e) { return null; } }
+    async function guardarEstado() {
+      if (!restaurado) return;
+      try {
+        const bm = await report.bookmarksManager.capture({ personalizeVisuals: true });
+        if (bm && bm.state) localStorage.setItem(STATE_KEY, bm.state);
+      } catch (e) { console.warn("[REPORTE] No se pudo guardar el estado:", e); }
+    }
+    function programarGuardado() { clearTimeout(saveTimer); saveTimer = setTimeout(guardarEstado, 1500); }
+
+    report.on("loaded", async () => {
+      restaurado = false;
+      const estado = leerEstado();
+      if (estado) {
+        try { await report.bookmarksManager.applyState(estado); console.log("[REPORTE] Última vista restaurada"); }
+        catch (e) { console.warn("[REPORTE] No se pudo restaurar la vista:", e); }
+      }
+      restaurado = true;
+      cargado = true;
+      msgEl.style.display = "none";
+      console.log("[REPORTE] Informe cargado con el SDK. Usuario:", usuario);
+    });
+    // Cada vez que el informe se redibuja (filtro, segmentación, orden, página) se guarda la vista
+    report.on("rendered", programarGuardado);
+    report.on("pageChanged", programarGuardado);
+    window.addEventListener("pagehide", guardarEstado);
+    report.on("error", e => {
+      console.warn("Power BI:", e.detail);
+      if (!cargado) {
+        msgEl.style.display = "flex";
+        msgEl.textContent = "No se pudo abrir el reporte. Es posible que no tengas acceso; consultá con el administrador.";
+      }
+    });
+
+    // Renovar el token antes de que venza (~1 h)
+    setInterval(async () => {
+      try { const t = await getToken(); if (t) await report.setAccessToken(t); }
+      catch (e) { console.error("Renovación de token:", e); }
+    }, 40 * 60 * 1000);
+
+  } catch (e) {
+    console.error(e);
+    msgEl.textContent = "Error: " + e.message;
+  }
+})();
+
+</script>
+</body>
+</html>
