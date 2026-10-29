@@ -5,33 +5,48 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Menú Reportes</title>
   <style>
+    :root {
+      --azul: #0078D4;
+      --fondo: #ffffff;
+      --tarjeta: #f6f7f9;
+      --tarjeta-hover: #eaf2fb;
+      --texto: #222;
+      --titulo: #444;
+      --linea: #e3e5e8;
+    }
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: "Segoe UI", Arial, sans-serif; background: #f3f4f6; color: #222; min-height: 100vh; }
-    header {
-      display: flex; justify-content: space-between; align-items: center; gap: 12px;
-      padding: 14px 20px; background: #fff; border-bottom: 1px solid #e3e3e3;
+    body { font-family: "Segoe UI", Arial, sans-serif; background: var(--fondo); color: var(--texto); min-height: 100vh; }
+    header { position: relative; padding: 20px 16px 8px; text-align: center; }
+    header img { height: 64px; max-width: 80%; object-fit: contain; }
+    #usuario { position: absolute; top: 10px; right: 16px; font-size: 12px; color: #777; text-align: right; }
+    #usuario a { display: block; color: var(--azul); cursor: pointer; text-decoration: none; margin-top: 2px; }
+    main { padding: 12px 16px 32px; max-width: 1400px; margin: 0 auto; }
+    #estado { max-width: 600px; margin: 20px auto; padding: 12px 14px; border-radius: 6px; background: #eef2ff; font-size: 14px; text-align: center; }
+    #estado.err { background: #fdecec; color: #8a1c1c; white-space: pre-wrap; text-align: left; }
+    #grupos { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 32px; align-items: start; }
+    .grupo h2 {
+      font-size: 19px; font-weight: 600; text-transform: uppercase; letter-spacing: .02em; color: var(--titulo);
+      text-align: center; padding: 14px 0 12px; border-bottom: 2px solid var(--linea); margin-bottom: 18px;
     }
-    header h1 { font-size: 18px; font-weight: 600; }
-    #usuario { font-size: 13px; color: #666; text-align: right; }
-    #usuario a { color: #0078D4; cursor: pointer; text-decoration: none; margin-left: 8px; }
-    main { padding: 20px 16px; max-width: 1200px; margin: 0 auto; }
-    #estado { padding: 12px 14px; border-radius: 6px; background: #eef2ff; font-size: 14px; }
-    #estado.err { background: #fdecec; color: #8a1c1c; white-space: pre-wrap; }
-    #grupos { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; align-items: start; }
-    .grupo { background: #fff; border-radius: 8px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.10); }
-    .grupo h2 { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #555; margin: 0 2px 10px; }
-    .botones { display: flex; flex-direction: column; gap: 8px; }
+    .botones { display: flex; flex-direction: column; gap: 12px; padding: 0 8px; }
     .botones a {
-      display: block; padding: 12px 20px; background: #0078D4; color: #fff; border-radius: 6px;
-      text-decoration: none; font-size: 14px; font-weight: 600; text-align: center;
+      display: block; padding: 15px 22px; background: var(--tarjeta); color: var(--texto);
+      border-left: 4px solid var(--azul); border-radius: 6px;
+      text-decoration: none; font-size: 16px; font-weight: 500; text-align: left;
+      transition: background .15s, transform .15s;
     }
-    .botones a:hover, .botones a:focus { background: #005A9E; }
+    .botones a:hover, .botones a:focus-visible { background: var(--tarjeta-hover); transform: translateX(2px); outline: none; }
+    @media (max-width: 600px) {
+      header { padding-top: 44px; }
+      header img { height: 48px; }
+      #grupos { gap: 20px; }
+    }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
 </head>
 <body>
   <header>
-    <h1>Reportes</h1>
+    <img src="logo.png" alt="Grupo Chiavassa" />
     <div id="usuario"></div>
   </header>
   <main>
