@@ -12,11 +12,6 @@
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
       background: #fff; color: #444; font-size: 15px; padding: 20px; text-align: center; z-index: 5;
     }
-    #toast {
-      position: fixed; bottom: 20px; right: 20px; background: #323232; color: #fff;
-      padding: 10px 16px; border-radius: 6px; font-size: 14px; display: none; z-index: 10;
-      box-shadow: 0 2px 8px rgba(0,0,0,.3);
-    }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/powerbi-client@2.23.1/dist/powerbi.min.js"></script>
@@ -24,7 +19,6 @@
 <body>
   <div id="msg">Cargando informe…</div>
   <div id="report"></div>
-  <div id="toast"></div>
 
 <script>
 // ================== CONFIGURACIÓN (completar) ==================
@@ -32,28 +26,16 @@ const CONFIG = {
   clientId:  "256c7b81-5d04-4483-8c32-6ff25b4c817e",
   tenantId:  "e6684c44-ece9-445e-8561-d274239534c5",
   groupId:   "a83b84fb-9a41-4fc0-bfd1-122520b80aeb",
-  reportId:  "4a0b4d4d-459e-4bca-8f8c-3feded25333a",
-  refreshButtonText: "actualizar"   // el botón se reconoce si su TEXTO contiene esta palabra
+  reportId:  "4a0b4d4d-459e-4bca-8f8c-3feded25333a"
 };
 // La URI de redirección es la URL exacta de esta página (registrarla en Azure como SPA)
 const REDIRECT_URI = window.location.origin + window.location.pathname;
 // ===============================================================
 
-const SCOPES = [
-  "https://analysis.windows.net/powerbi/api/Report.Read.All",
-  "https://analysis.windows.net/powerbi/api/Dataset.ReadWrite.All"
-];
+const SCOPES = ["https://analysis.windows.net/powerbi/api/Report.Read.All"];
 const API = "https://api.powerbi.com/v1.0/myorg";
 
 const msgEl = document.getElementById("msg");
-const toastEl = document.getElementById("toast");
-let toastTimer;
-function toast(text, ms = 4000) {
-  clearTimeout(toastTimer);
-  toastEl.textContent = text;
-  toastEl.style.display = "block";
-  if (ms > 0) toastTimer = setTimeout(() => toastEl.style.display = "none", ms);
-}
 
 const msalApp = new msal.PublicClientApplication({
   auth: {
@@ -83,7 +65,7 @@ async function getToken() {
   }
 }
 
-let report, datasetId;
+let report;
 
 (async () => {
   try {
@@ -94,14 +76,14 @@ let report, datasetId;
     const token = await getToken();
     if (!token) return; // redirigiendo al login
 
-    // Datos del informe (embedUrl y datasetId)
+    // Datos del informe (embedUrl)
     // Los usuarios con permiso solo de lectura (informe compartido, sin acceso al workspace)
     // pueden no tener permiso para esta consulta: en ese caso se arma la URL directamente.
     let info = { embedUrl: `https://app.powerbi.com/reportEmbed?reportId=${CONFIG.reportId}&groupId=${CONFIG.groupId}` };
     try {
       const r = await fetch(`${API}/groups/${CONFIG.groupId}/reports/${CONFIG.reportId}`,
         { headers: { Authorization: `Bearer ${token}` } });
-      if (r.ok) { info = await r.json(); datasetId = info.datasetId; }
+      if (r.ok) { info = await r.json(); }
       else console.log(`[EERR] Sin acceso a los datos del informe (HTTP ${r.status}); se usa la URL directa.`);
     } catch (e) { console.warn("[EERR] Consulta del informe:", e); }
 
@@ -153,11 +135,6 @@ let report, datasetId;
     report.on("pageChanged", programarGuardado);
     window.addEventListener("pagehide", guardarEstado);
     report.on("error", e => console.warn("Power BI:", e.detail));
-    report.on("buttonClicked", e => {
-      console.log("[EERR] Botón clickeado:", JSON.stringify(e.detail));
-      const texto = ((e.detail && e.detail.title) || "").toLowerCase();
-      if (texto.includes(CONFIG.refreshButtonText)) actualizar();
-    });
 
     // Renovar el token antes de que venza (~1 h)
     setInterval(async () => {
@@ -171,63 +148,6 @@ let report, datasetId;
   }
 })();
 
-// ================== BOTÓN DE ACTUALIZACIÓN ==================
-let refrescando = false;
-
-async function ultimoRefresh(token) {
-  const r = await fetch(`${API}/groups/${CONFIG.groupId}/datasets/${datasetId}/refreshes?$top=1`,
-    { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) return null;
-  const j = await r.json();
-  return j.value && j.value[0];
-}
-
-async function actualizar() {
-  if (refrescando) { toast("Ya hay una actualización en curso…"); return; }
-  if (!datasetId) { toast("No tenés permiso para actualizar este modelo.", 6000); return; }
-  const token = await getToken();
-  if (!token) return;
-
-  const previo = await ultimoRefresh(token);
-  if (previo && previo.status === "Unknown") { toast("Ya hay una actualización en curso…"); return; }
-
-  const p = await fetch(`${API}/groups/${CONFIG.groupId}/datasets/${datasetId}/refreshes`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ notifyOption: "NoNotification" })
-  });
-  if (!p.ok) {
-    console.error(await p.text());
-    toast(p.status === 403
-      ? "No tenés permiso para actualizar este modelo."
-      : `No se pudo iniciar la actualización (HTTP ${p.status}).`, 6000);
-    return;
-  }
-
-  refrescando = true;
-  toast("Actualizando datos… esto puede tardar unos minutos.", 0);
-  const prevId = previo && previo.requestId;
-
-  const timer = setInterval(async () => {
-    try {
-      const t = await getToken();
-      if (!t) return;
-      const s = await ultimoRefresh(t);
-      if (!s || s.requestId === prevId) return; // todavía no aparece el nuevo
-      if (s.status === "Completed") {
-        clearInterval(timer); refrescando = false;
-        await report.reload();
-        toast("Datos actualizados ✔", 4000);
-      } else if (s.status === "Failed" || s.status === "Disabled") {
-        clearInterval(timer); refrescando = false;
-        toast("La actualización falló. Revisá el historial en Power BI Service.", 8000);
-      }
-    } catch (e) { console.error(e); }
-  }, 15000);
-}
-</script>
-</body>
-</html>
 </script>
 </body>
 </html>
