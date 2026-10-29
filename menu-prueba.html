@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prueba Menú</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: "Segoe UI", Arial, sans-serif; background: #f4f4f6; color: #222; padding: 24px 16px; }
+    .card { max-width: 760px; margin: 0 auto; background: #fff; border-radius: 8px; padding: 20px 24px; box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+    h1 { font-size: 20px; margin-bottom: 4px; }
+    .sub { color: #666; font-size: 14px; margin-bottom: 18px; }
+    #estado { padding: 10px 12px; border-radius: 6px; background: #eef2ff; font-size: 14px; margin-bottom: 16px; }
+    #estado.ok { background: #e8f6ec; }
+    #estado.err { background: #fdecec; color: #8a1c1c; white-space: pre-wrap; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #eee; vertical-align: top; }
+    th { color: #555; font-weight: 600; }
+    td.id { font-family: Consolas, monospace; font-size: 12px; color: #555; word-break: break-all; }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.27.0/lib/msal-browser.min.js"></script>
+</head>
+<body>
+  <div class="card">
+    <h1>Prueba de menú por usuario</h1>
+    <p class="sub">Página de prueba: muestra solo los reportes habilitados para el usuario logueado (según el Excel + RLS del modelo del menú).</p>
+    <div id="estado">Iniciando…</div>
+    <table id="tabla" style="display:none">
+      <thead><tr><th>#</th><th>Reporte</th><th>ID del reporte</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+<script>
+// ================== CONFIGURACIÓN ==================
+const CONFIG = {
+  clientId:  "256c7b81-5d04-4483-8c32-6ff25b4c817e",
+  tenantId:  "e6684c44-ece9-445e-8561-d274239534c5",
+  groupId:   "3dba45c2-9d88-4f5a-8a82-a649f42e0cc2",   // workspace del modelo del menú
+  datasetId: "13dd0de7-54e7-406b-b6ae-ba903bae3ff7"    // modelo semántico del menú
+};
+// Consulta DAX: el RLS sobre Usuarios deja solo las filas del usuario logueado
+const DAX = `EVALUATE SELECTCOLUMNS(Usuarios, "Reporte", Usuarios[Titulo], "Link", RELATED(Menu[Link Power Bi]))`;
+const REDIRECT_URI = window.location.origin + window.location.pathname;
+// ===================================================
+
+const SCOPES = [
+  "https://analysis.windows.net/powerbi/api/Report.Read.All",
+  "https://analysis.windows.net/powerbi/api/Dataset.Read.All"
+];
+const estado = document.getElementById("estado");
+function msg(t, cls) { estado.textContent = t; estado.className = cls || ""; }
+
+const msalApp = new msal.PublicClientApplication({
+  auth: {
+    clientId: CONFIG.clientId,
+    authority: `https://login.microsoftonline.com/${CONFIG.tenantId}`,
+    redirectUri: REDIRECT_URI
+  },
+  cache: { cacheLocation: "localStorage" }
+});
+
+async function getToken() {
+  const account = msalApp.getActiveAccount() || msalApp.getAllAccounts()[0];
+  if (!account) { await msalApp.loginRedirect({ scopes: SCOPES }); return null; }
+  msalApp.setActiveAccount(account);
+  try {
+    return (await msalApp.acquireTokenSilent({ scopes: SCOPES, account })).accessToken;
+  } catch (e) {
+    if (e instanceof msal.InteractionRequiredAuthError) {
+      await msalApp.acquireTokenRedirect({ scopes: SCOPES, account }); return null;
+    }
+    throw e;
+  }
+}
+
+async function consultar(token, url) {
+  return fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ queries: [{ query: DAX }], serializerSettings: { includeNulls: true } })
+  });
+}
+
+(async () => {
+  try {
+    await msalApp.initialize();
+    const res = await msalApp.handleRedirectPromise();
+    if (res && res.account) msalApp.setActiveAccount(res.account);
+
+    const token = await getToken();
+    if (!token) return; // redirigiendo al login
+
+    const usuario = (msalApp.getActiveAccount() || {}).username;
+    msg(`Usuario: ${usuario} — consultando reportes…`);
+
+    // Primero el endpoint sin workspace (sirve para modelos compartidos); si falla, con workspace
+    let r = await consultar(token, `https://api.powerbi.com/v1.0/myorg/datasets/${CONFIG.datasetId}/executeQueries`);
+    if (!r.ok) {
+      console.log("[MENU] Endpoint sin workspace devolvió", r.status, await r.text());
+      r = await consultar(token, `https://api.powerbi.com/v1.0/myorg/groups/${CONFIG.groupId}/datasets/${CONFIG.datasetId}/executeQueries`);
+    }
+    if (!r.ok) {
+      const det = await r.text();
+      console.error("[MENU]", r.status, det);
+      msg(`Usuario: ${usuario}\nERROR HTTP ${r.status}\n${det}`, "err");
+      return;
+    }
+
+    const data = await r.json();
+    const filas = (((data.results || [])[0] || {}).tables || [])[0]?.rows || [];
+    console.log("[MENU] Filas recibidas:", filas);
+
+    const tbody = document.querySelector("#tabla tbody");
+    const vistos = new Set();
+    let n = 0;
+    filas.forEach(f => {
+      const nombre = f["[Reporte]"] ?? "";
+      const link = f["[Link]"] ?? "";
+      const m = String(link).match(/reports\/([0-9a-f-]{36})/i) || String(link).match(/reportId=([0-9a-f-]{36})/i);
+      const id = m ? m[1] : "(no se encontró ID en el link)";
+      const clave = nombre + "|" + id;
+      if (vistos.has(clave)) return;
+      vistos.add(clave);
+      n++;
+      const tr = document.createElement("tr");
+      [n, nombre, id].forEach((v, i) => {
+        const td = document.createElement("td");
+        td.textContent = v;
+        if (i === 2) td.className = "id";
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById("tabla").style.display = n ? "table" : "none";
+    msg(`Usuario: ${usuario} — ${n} reporte(s) habilitado(s).`, "ok");
+  } catch (e) {
+    console.error(e);
+    msg("Error: " + e.message, "err");
+  }
+})();
+</script>
+</body>
+</html>
