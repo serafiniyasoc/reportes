@@ -110,7 +110,7 @@ let report, datasetId;
       tokenType: models.TokenType.Aad,
       permissions: models.Permissions.Read,
       settings: {
-        persistentFiltersEnabled: true,   // recuerda la última selección de cada usuario
+        persistentFiltersEnabled: false,  // el estado lo guarda esta página (funciona en Edge y Chrome)
         panes: {
           filters: { visible: true, expanded: false },
           pageNavigation: { visible: true }
@@ -118,10 +118,36 @@ let report, datasetId;
       }
     });
 
-    report.on("loaded", () => {
+    // ---- Recordar filtros, segmentaciones, orden y página por usuario ----
+    const usuario = ((msalApp.getActiveAccount() || {}).username || "anon").toLowerCase();
+    const STATE_KEY = `pbiEstado_${CONFIG.reportId}_${usuario}`;
+    let restaurado = false, saveTimer;
+
+    function leerEstado() { try { return localStorage.getItem(STATE_KEY); } catch (e) { return null; } }
+    async function guardarEstado() {
+      if (!restaurado) return;
+      try {
+        const bm = await report.bookmarksManager.capture({ personalizeVisuals: true });
+        if (bm && bm.state) localStorage.setItem(STATE_KEY, bm.state);
+      } catch (e) { console.warn("[EERR] No se pudo guardar el estado:", e); }
+    }
+    function programarGuardado() { clearTimeout(saveTimer); saveTimer = setTimeout(guardarEstado, 1500); }
+
+    report.on("loaded", async () => {
+      restaurado = false;
+      const estado = leerEstado();
+      if (estado) {
+        try { await report.bookmarksManager.applyState(estado); console.log("[EERR] Última vista restaurada"); }
+        catch (e) { console.warn("[EERR] No se pudo restaurar la vista:", e); }
+      }
+      restaurado = true;
       msgEl.style.display = "none";
-      console.log("[EERR] Informe cargado con el SDK. Usuario:", (msalApp.getActiveAccount() || {}).username);
+      console.log("[EERR] Informe cargado con el SDK. Usuario:", usuario);
     });
+    // Cada vez que el informe se redibuja (filtro, segmentación, orden, página) se guarda la vista
+    report.on("rendered", programarGuardado);
+    report.on("pageChanged", programarGuardado);
+    window.addEventListener("pagehide", guardarEstado);
     report.on("error", e => console.warn("Power BI:", e.detail));
     report.on("buttonClicked", e => {
       console.log("[EERR] Botón clickeado:", JSON.stringify(e.detail));
@@ -194,10 +220,6 @@ async function actualizar() {
     } catch (e) { console.error(e); }
   }, 15000);
 }
-</script>
-</body>
-</html>
-
 </script>
 </body>
 </html>
