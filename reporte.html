@@ -33,7 +33,11 @@ const CONFIG = {
   reportId:  ""
 };
 const NOMBRE = (PARAMS.get("r") || "").trim().toLowerCase();
-const DAX = `EVALUATE SELECTCOLUMNS(FILTER(Usuarios, Usuarios[Usuario] = USERPRINCIPALNAME() && Usuarios[Acceso] = 1), "Titulo", Usuarios[Titulo], "Link", RELATED(Menu[Link Power Bi]))`;
+// Usuario actual (+ Acceso = 1 si esa columna existe en el modelo)
+const CONSULTAS = [
+  `EVALUATE SELECTCOLUMNS(FILTER(Usuarios, Usuarios[Usuario] = USERPRINCIPALNAME() && Usuarios[Acceso] = 1), "Titulo", Usuarios[Titulo], "Link", RELATED(Menu[Link Power Bi]))`,
+  `EVALUATE SELECTCOLUMNS(FILTER(Usuarios, Usuarios[Usuario] = USERPRINCIPALNAME()), "Titulo", Usuarios[Titulo], "Link", RELATED(Menu[Link Power Bi]))`
+];
 
 // Nombre legible para la dirección: "Alimentación Tambo (desagregado)" -> "alimentacion-tambo-desagregado"
 function slug(t) {
@@ -49,11 +53,15 @@ function idDeLink(link) {
 
 // Busca el reporte por nombre entre los habilitados para el usuario
 async function buscarReporte(token) {
-  const cuerpo = JSON.stringify({ queries: [{ query: DAX }], serializerSettings: { includeNulls: true } });
   const h = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-  let r = await fetch(`https://api.powerbi.com/v1.0/myorg/datasets/${CONFIG.menuDatasetId}/executeQueries`, { method: "POST", headers: h, body: cuerpo });
-  if (!r.ok && (r.status === 401 || r.status === 403 || r.status === 404)) {
-    r = await fetch(`https://api.powerbi.com/v1.0/myorg/groups/${CONFIG.menuGroupId}/datasets/${CONFIG.menuDatasetId}/executeQueries`, { method: "POST", headers: h, body: cuerpo });
+  let r;
+  for (const dax of CONSULTAS) {
+    const cuerpo = JSON.stringify({ queries: [{ query: dax }], serializerSettings: { includeNulls: true } });
+    r = await fetch(`https://api.powerbi.com/v1.0/myorg/datasets/${CONFIG.menuDatasetId}/executeQueries`, { method: "POST", headers: h, body: cuerpo });
+    if (!r.ok && (r.status === 401 || r.status === 403 || r.status === 404)) {
+      r = await fetch(`https://api.powerbi.com/v1.0/myorg/groups/${CONFIG.menuGroupId}/datasets/${CONFIG.menuDatasetId}/executeQueries`, { method: "POST", headers: h, body: cuerpo });
+    }
+    if (r.ok || r.status !== 400) break;   // 400 = la consulta no aplica (p. ej. no existe la columna Acceso): probar la siguiente
   }
   if (!r.ok) throw new Error(`No se pudo consultar el menú (HTTP ${r.status}).`);
   const data = await r.json();

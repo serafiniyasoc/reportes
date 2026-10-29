@@ -60,10 +60,12 @@ const SCOPES = [
   "https://analysis.windows.net/powerbi/api/Dataset.Read.All"
 ];
 
-// Misma lógica que la medida MenuHTML: usuario actual + Acceso = 1.
+// Misma lógica que la medida MenuHTML: usuario actual (+ Acceso = 1 si esa columna existe en el modelo).
 // Grupo = columna Reporte de la hoja Menu; nombre del botón = Titulo.
+const SELECT = `"Titulo", Usuarios[Titulo], "Link", RELATED(Menu[Link Power Bi]), "Grupo", RELATED(Menu[Reporte])`;
 const CONSULTAS = [
-  `EVALUATE SELECTCOLUMNS(FILTER(Usuarios, Usuarios[Usuario] = USERPRINCIPALNAME() && Usuarios[Acceso] = 1), "Titulo", Usuarios[Titulo], "Link", RELATED(Menu[Link Power Bi]), "Grupo", RELATED(Menu[Reporte]))`
+  `EVALUATE SELECTCOLUMNS(FILTER(Usuarios, Usuarios[Usuario] = USERPRINCIPALNAME() && Usuarios[Acceso] = 1), ${SELECT})`,
+  `EVALUATE SELECTCOLUMNS(FILTER(Usuarios, Usuarios[Usuario] = USERPRINCIPALNAME()), ${SELECT})`
 ];
 
 const estado = document.getElementById("estado");
